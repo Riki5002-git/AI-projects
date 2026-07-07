@@ -1,0 +1,157 @@
+# Ecommerce Microservices Project
+
+## סיכום כללי
+
+המערכת מדגימה פיצול ממונולית למיקרו-שירותים ברמה של ייצור, כולל Messaging, Cache, ניטור, CI/CD, איזון עומסים, BFF, Gateway, ותיעוד מלא. כל שירות עצמאי, בעל מסד נתונים משלו, ומתקשר עם שאר השירותים דרך API Gateway ו־RabbitMQ.
+
+---
+
+## תרשים מערכת (mermaid)
+
+---
+
+## מבנה הפרויקט ומטרת כל שירות
+
+### 1. OrderService
+- **מטרה:** ניהול הזמנות (CRUD), שליחת הודעות RabbitMQ על הזמנה חדשה.
+- **DB:** SQL Server (OrderDB).
+- **קבצים עיקריים:**
+  - `Order.cs` – מודל הזמנה.
+  - `OrderDbContext.cs` – גישה למסד הנתונים.
+  - `OrdersController.cs` – נקודות קצה להזמנות.
+  - `OrderPublisher.cs` – שליחת הודעות RabbitMQ.
+  - `Program.cs` – הגדרת השירות, Serilog, Health, CorrelationId.
+  - `appsettings.json` – הגדרות DB, RabbitMQ, Seq.
+  - `Dockerfile` – בניית קונטיינר.
+
+### 2. ProductCatalogService
+- **מטרה:** ניהול קטלוג מוצרים (CRUD), קריאות מהירות בעזרת Redis Cache.
+- **DB:** MongoDB (NoSQL) + Redis (Cache).
+- **קבצים עיקריים:**
+  - `Product.cs` – מודל מוצר.
+  - `ProductRepository.cs` – גישה ל־MongoDB ו־Redis.
+  - `ProductsController.cs` – נקודות קצה למוצרים.
+  - `Program.cs` – הגדרת השירות, Serilog, Health, CorrelationId.
+  - `appsettings.json` – הגדרות MongoDB, Redis, Seq.
+  - `Dockerfile` – בניית קונטיינר.
+
+### 3. InventoryService
+- **מטרה:** ניהול מלאי, בדיקת זמינות, עדכון מלאי בהזמנה.
+- **DB:** PostgreSQL (InventoryDB).
+- **Messaging:** מאזין ל־OrderPlaced, משיב ב־InventoryReserved/InventoryRejected.
+- **קבצים עיקריים:**
+  - `Inventory.cs` – מודל מלאי.
+  - `InventoryDbContext.cs` – גישה למסד הנתונים.
+  - `InventoryController.cs` – נקודות קצה למלאי.
+  - `OrderConsumer.cs` – מאזין ל־RabbitMQ, מטפל בהזמנות.
+  - `Program.cs` – הגדרת השירות, Serilog, Health, CorrelationId.
+  - `appsettings.json` – הגדרות DB, RabbitMQ, Seq.
+  - `Dockerfile` – בניית קונטיינר.
+
+### 4. NotificationService
+- **מטרה:** שליחת התראות ללקוח על מצב ההזמנה (אושרה/נדחתה).
+- **DB:** SQLite (פשוט, מספיק לשירות קטן).
+- **Messaging:** מאזין ל־InventoryReserved/InventoryRejected.
+- **קבצים עיקריים:**
+  - `Notification.cs` – מודל התראה.
+  - `NotificationDbContext.cs` – גישה למסד הנתונים.
+  - `NotificationsController.cs` – נקודות קצה להתראות.
+  - `InventoryConsumer.cs` – מאזין ל־RabbitMQ, יוצר Notification.
+  - `Program.cs` – הגדרת השירות, Serilog, Health, CorrelationId.
+  - `appsettings.json` – הגדרות DB, RabbitMQ, Seq.
+  - `Dockerfile` – בניית קונטיינר.
+
+### 5. ApiGateway
+- **מטרה:** שער כניסה יחיד לכל ה־API, ניתוב קריאות לשירותים, איזון עומסים.
+- **טכנולוגיה:** YARP (Reverse Proxy).
+- **קבצים עיקריים:**
+  - `Program.cs` – הגדרת YARP.
+  - `appsettings.json` – הגדרת מסלולים (routes/clusters).
+  - `Dockerfile` – בניית קונטיינר.
+
+### 6. BffService (Backend For Frontend)
+- **מטרה:** שירות שמאגד נתונים ממספר שירותים לנקודת קצה אחת (לדוג' פרטי הזמנה + מוצר).
+- **קבצים עיקריים:**
+  - `OrderDetailsController.cs` – פונה ל־ApiGateway, מאחד נתונים.
+  - `Program.cs` – הגדרת השירות, Serilog, Health, CorrelationId.
+  - `appsettings.json` – הגדרות כלליות.
+  - `Dockerfile` – בניית קונטיינר.
+
+---
+
+## תשתיות ותלויות
+
+- **RabbitMQ:** תיווך הודעות בין שירותים (OrderPlaced, InventoryReserved/Rejected).
+- **Redis:** מטמון למוצרים (Cache-aside).
+- **Seq:** לוגים מרכזיים מכל השירותים (ניתן לחפש לפי CorrelationId).
+- **docker-compose.yml:** מרים את כל השירותים, RabbitMQ, Redis, Seq, וכל מסדי הנתונים.
+- **ADR-Database.md:** תיעוד החלטות בחירת מסד נתונים לכל שירות.
+
+---
+
+## תהליך הזמנה (Saga מבוסס כוריאוגרפיה)
+
+1. **לקוח** שולח בקשת הזמנה ל־OrderService (דרך ApiGateway).
+2. **OrderService** יוצר הזמנה, שולח הודעה ל־RabbitMQ (OrderPlaced).
+3. **InventoryService** מאזין, בודק מלאי, מעדכן, משיב ב־InventoryReserved/InventoryRejected.
+4. **NotificationService** מאזין, יוצר Notification ללקוח.
+5. **כל שלב מתועד בלוגים עם CorrelationId אחיד.**
+
+---
+
+## CI/CD
+
+- **.github/workflows/ci.yml:**  
+  - בונה, בודק, ומריץ Docker build לכל שירות.
+  - מרים את כל המערכת עם docker compose.
+  - מבצע בדיקות Smoke (Health) לכל שירות.
+  - מנקה את הסביבה בסיום.
+
+---
+
+## הוראות הרצה
+
+1. **הרצה מקומית:**
+
+השירותים יעלו בכתובות:
+- Gateway: http://localhost:5000
+- OrderService: http://localhost:5001
+- ProductCatalogService: http://localhost:5002
+- InventoryService: http://localhost:5003
+- NotificationService: http://localhost:5004
+- BffService: http://localhost:5005
+- Seq (לוגים): http://localhost:5341
+
+2. **בדיקות בריאות:**
+- לכל שירות יש endpoint: `/health`
+
+3. **בדיקות Messaging ו־Cache:**
+- בצע POST /orders → בדוק שההזמנה עוברת דרך RabbitMQ, InventoryService, NotificationService.
+- בדוק ביומני ProductCatalogService שיש cache hit/miss.
+
+4. **בדיקת לוגים:**
+- כל הלוגים נשלחים ל־Seq, כולל מזהה קורלציה.
+
+---
+
+## דגשים חשובים
+
+- כל שירות עצמאי, עם DB משלו (פוליגלוט).
+- כל שירות נבדק ב־/health (בדיקות בריאות).
+- כל לוג נשלח ל־Seq, כולל מזהה קורלציה.
+- כל שינוי בקוד עובר דרך CI/CD, אי אפשר למזג ל־main בלי בדיקות.
+- כל השירותים נגישים רק דרך ApiGateway (למעט בדיקות בריאות).
+- BFF מאפשר לאפליקציית Frontend לקבל מידע מאוחד ב־API אחד.
+
+---
+
+## שאלות נפוצות
+
+- **איך לעקוב אחרי הזמנה?**  
+חפש את מזהה הקורלציה (CorrelationId) בלוגים של Seq.
+
+- **איך לבדוק שה־Cache עובד?**  
+בדוק ביומני ProductCatalogService הודעות cache hit/miss.
+
+- **איך לבדוק Messaging?**  
+בצע הזמנה, בדוק שההודעה עוברת דרך RabbitMQ, InventoryService, NotificationService.
